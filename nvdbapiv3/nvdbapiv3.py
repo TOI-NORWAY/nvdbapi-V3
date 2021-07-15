@@ -211,7 +211,7 @@ class nvdbVegnett:
                 self.paginering['hvilken'] += 1
                 return self.data['objekter'][self.paginering['hvilken']-1]
             else: 
-                return None
+                return False
              
         elif self.paginering['initielt']: 
         
@@ -231,7 +231,7 @@ class nvdbVegnett:
                 return self.data['objekter'][0]
             else: 
                 self.paginering['meredata'] = False
-                return None
+                return False 
                 
         elif self.paginering['meredata'] and self.paginering['hvilken'] > antObjLokalt-1: 
             self.data = self.anrope( self.data['metadata']['neste']['href'] ) 
@@ -241,12 +241,15 @@ class nvdbVegnett:
                 return self.data['objekter'][0]
             else: 
                 self.paginering['meredata'] = False
-                return None
+                return False
         
         elif self.paginering['meredata']: 
         
             self.paginering['hvilken'] += 1
             return self.data['objekter'][self.paginering['hvilken']-1]
+
+        else:
+            return False
 
         
     def addfilter_geo(self, *args):
