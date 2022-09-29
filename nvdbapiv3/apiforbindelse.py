@@ -14,7 +14,9 @@ import json
 import copy 
 import pdb
 from time import sleep
-from  requests.exceptions import SSLError, ChunkedEncodingError
+from requests.exceptions import SSLError, ChunkedEncodingError,  ConnectionError
+from urllib3.exceptions import ProtocolError 
+from http.client import RemoteDisconnected
 
 class apiforbindelse( ):
     """
@@ -124,11 +126,10 @@ class apiforbindelse( ):
             klient : None eller string, Øk sporbarhet ved å gjør det lettere å finne endringssettene dine i 
                                         APISKRIV sitt endringssett-panel 
 
-            REALM : string, angir brukertype for innlogging skriveapi. 
-                    'EMPLOYEE' er default (personlig bruker, ansatt i SVV), 
-                    andre verdier er 'SERVICE_ACCOUNT' (fjesløs systembruker)
-                    eller 'EXTERNAL' (personlig bruker ikke ansatt i SVV)
-        
+            realm : string, angir brukertype for innlogging skriveapi. 
+                    'EMPLOYEE' er default (personlig bruker hos SVV), 
+                    alternativt 'serviceaccount' (fjesløs systembruker)
+                    TODO: Burde byttet begrep til user_type, ref https://nvdbapiles-v3.test.atlas.vegvesen.no/dokumentasjon/#autentisering 
         """
         
         if miljo: 
@@ -217,6 +218,7 @@ class apiforbindelse( ):
                 
             else: 
                 print( 'Fikk ikke logget på - ingen accessToken :(' )
+                # pdb.set_trace()
                 
         else: 
             print( "Fikk ikke logget på :(  , loginrespons ", self.loginrespons.status_code )
@@ -320,7 +322,7 @@ class apiforbindelse( ):
                                        proxies=self.proxies,
                                        headers=myheaders, 
                                        **kwargs)
-        except (SSLError, ChunkedEncodingError) as e:
+        except (SSLError, ChunkedEncodingError, ConnectionError, RemoteDisconnected, ProtocolError, RemoteDisconnected) as e:
             venteperiode = 5
             print( 'Feilmelding ved henting av data, prøver på ny om', venteperiode, 'sekunder', e)
             sleep( 5 )

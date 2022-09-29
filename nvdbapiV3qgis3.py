@@ -4,12 +4,18 @@ Klasser og funksjoner for å føye NVDB vegnett og fagdata til QGIS 3
 
 """
 
-import urllib.parse 
-from qgis.core import QgsProject,  QgsVectorLayer, QgsFeature, QgsGeometry, QgsPoint, QgsLineString
-from nvdbapiv3 import nvdbVegnett, nvdbFagdata, nvdbFagObjekt, finnid
 from copy import deepcopy
 import pdb
+import json 
+import urllib.parse 
 
+from qgis.core import QgsProject,  QgsVectorLayer, QgsFeature, QgsGeometry, QgsPoint, QgsLineString
+from nvdbapiv3 import nvdbVegnett, nvdbFagdata, nvdbFagObjekt, finnid
+
+# Global variable for maks lengde på tekstverdier i qgis-objektenes egenskapsverdier 
+# Masse styr rundt håndtering av maks lengde på tekstfelt som genialt ble omgått ved å sette 
+# denne verdien = -1 
+max_text_length = -1
 
 class memlayerwrap(): 
     """
@@ -69,16 +75,15 @@ def lagQgisDakat(  sokeobjekt):
     # Liste med ID'er for egenskapstypene for denne objekttypen  
     egIds = [] 
     # Liste med QGIS datatyper. Kort liste med metadata først, deretter matcher listen med egenskapstyper. 
-    qgisEg = ['field=nvdbid:int', 'versjon:int', 'fraDato:string', 'sistmodifisert:string' ]
+    qgisEg = ['field=nvdbid:int', 'versjon:int', 'startDato:string', 'sluttDato:string', 'sistmodifisert:string' ]
 
     for eg in sokeobjekt.objektTypeDef['egenskapstyper']: 
         egIds.append( eg['id'] ) 
         qgisEg.append( egenskaptype2qgis( eg) ) 
         
-    # Føyer på placeholder for vegsystemreferanse: 
+    # Føyer på placeholder for vegsystemreferanse, stedfesting og trafikantgruppe
+    qgisEg.append( 'trafikantgruppe:string')
     qgisEg.append( 'vegsystemreferanse:string')
-
-    # Føyer på placeholder for stedfesting
     qgisEg.append( 'stedfesting:string')
 
 
@@ -106,38 +111,65 @@ def egenskaptype2qgis( egenskaptype):
 
     """
     defstring = egenskaptype['navn']
-    if 'Tall' in egenskaptype['egenskapstype']:
-        if 'desimaler' in egenskaptype.keys() and egenskaptype['desimaler'] > 0:  
-            defstring += ':double'
-        else: 
+    if 'flyttall' in egenskaptype['egenskapstype'].lower():
+        defstring += ':double'
+    elif 'heltall' in egenskaptype['egenskapstype'].lower():
             defstring += ':int' 
     elif 'Dato' == egenskaptype['egenskapstype']:
         defstring += ':date'  
     else: 
-        defstring += ':string(40000)' 
+        defstring += f':string({ max_text_length })' 
     
     return defstring 
     
     
-def nvdbFeat2qgisProperties( mittobj, egIds): 
+def nvdbFeat2qgisProperties( mittobj, egIds, qgisEg): 
     """
     Omsetter egenskapsverdiene pluss utvalgte metadata fra et 
     NVDB fagobjekt til en liste med QGIS verdier. 
     """ 
     qgisprops = [ mittobj.id, mittobj.metadata['versjon'], 
                  mittobj.metadata['startdato'] ] 
-                 
+
+    if 'sluttdato' in mittobj.metadata:
+        qgisprops.append( mittobj.metadata['sluttdato'] )
+    else: 
+        qgisprops.append( '' ) 
+                     
     if 'sist_modifisert' in mittobj.metadata:
         qgisprops.append( mittobj.metadata['sist_modifisert'] )
     else: 
         qgisprops.append( mittobj.metadata['startdato'] + 'T00:00:00' ) 
     
-    for eg in egIds: 
+    for idx, eg in enumerate( egIds ): 
         
-        qgisprops.append( mittobj.egenskapverdi(eg))
+        # Merk at indeksen her er forskjøvet med 5 relativt til NVDB-egenskapene, fordi vi nettopp la til en del metadatafelt først i tabellen
+        # (NVDB ID, versjon, startdato, sluttdato, sist modifisert)
+        egType = qgisEg[idx+5] 
+        egVal = mittobj.egenskapverdi(egIds[idx]) 
+
+        # Denne logikken er ikke nødvendig, likevel - vi omgår hele problemet ved å sette max_text_length = -1 (dvs uendelig stor plass)
+        # Sett global variabel max_text_length = f.eks. 40000 hvis du vil gjeninføre denne logikken. 
+        # if isinstance( egVal, str) and len( egVal ) > max_text_length: 
+        #     egVal = json.dumps( f'Egenskapsverdi { egType } SLETTET, tekstfelt med lengde {len(egVal)} > max_text_length {max_text_length} tegn'  )
+        #     print( egVal )
+            
+        qgisprops.append( egVal )
     
     return qgisprops
 
+def nvdb2kartListe(listeFagdata, iface, **kwargs):
+    """
+    Legger liste med objekttyper til kartutsnittet. Wrapper rundt nvdb2kart 
+
+    Takk til Oskar Eide Lilienthal, Rogaland fylkeskommune, som foreslo denne løsningen. 
+    """
+    if isinstance(listeFagdata, list):
+        for value in listeFagdata:
+            try: 
+                nvdb2kart(nvdbFagdata(value), iface, **kwargs)
+            except ValueError as err: 
+                print( f"Objekttype {value} finnes ikke: {err}")
 
 def nvdb2kart( nvdbref, iface, kunfagdata=True, kunvegnett=False, 
             miljo='prod',lagnavn=None, **kwargs):
@@ -330,7 +362,7 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
 
             segmentcount = 0 
             # Qgis attributter = utvalgte metadata + egenskapverdier etter datakatalogen 
-            egenskaper = nvdbFeat2qgisProperties( mittobj, egIds ) 
+            egenskaper = nvdbFeat2qgisProperties( mittobj, egIds, qgisEg ) 
             
             # Vi kan ha flere geometrivisninger samtidig. 
             # Løkke for å løpe gjennom dem. 
@@ -360,9 +392,10 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
             linjegeom = mittobj.egenskapverdi( linjenavn)
             punktgeom = mittobj.egenskapverdi( punktnavn)
 
-            # Datastruktur (liste) for vegsystemreferanse og stedfesting
+            # Datastruktur (liste) for vegsystemreferanse og stedfesting. Brukes for å holde på informasjon fra flere vegsegmenter per objekt. 
             vrefliste   = [ ]
             stedfesting = [ ]
+            trafikantgruppe = [ ]
             
                           
             if gt in [ 'alle', 'flate', 'beste' ]: 
@@ -395,7 +428,7 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
                     print( mittobj.id, "punkt", "\n\t", punktgeom, 
                             "\n\t", mygeoms[-1].asWkt()[0:100])
 
-            if gt == 'vegkart': 
+            if gt == 'vegkart' and mittobj and mittobj['geometri'] and 'wkt' in mittobj.geometri['wkt']: 
                 mygeoms.append( QgsGeometry.fromWkt( mittobj.geometri['wkt'] ) )  
                 beste_gt_suksess = True
             
@@ -428,6 +461,17 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
                         elif 'startposisjon' in segment.keys() and 'sluttposisjon' in segment.keys() and 'veglenkesekvensid' in segment.keys():
                             stedfeststring =  str(  segment['startposisjon'] ) + '-' + str(  segment['sluttposisjon'] ) + '@' + str( segment['veglenkesekvensid'] )
 
+
+                        # Trafikantgruppe, som kan være på kryssdel, sideanleggsdel i tillegg til strekning 
+                        trgruppe = 'Ukjent'
+                        if 'vegsystemreferanse' in segment.keys() and 'kryssystem' in segment['vegsystemreferanse'] and 'trafikantgruppe' in segment['vegsystemreferanse']['kryssystem']:
+                            trgruppe = segment['vegsystemreferanse']['kryssystem']['trafikantgruppe']
+                        elif 'vegsystemreferanse' in segment.keys() and 'sideanlegg' in segment['vegsystemreferanse'] and 'trafikantgruppe' in segment['vegsystemreferanse']['sideanlegg']:
+                            trgruppe = segment['vegsystemreferanse']['sideanlegg']['trafikantgruppe']
+                        elif 'vegsystemreferanse' in segment.keys() and 'strekning' in segment['vegsystemreferanse'] and 'trafikantgruppe' in segment['vegsystemreferanse']['strekning']:
+                            trgruppe = segment['vegsystemreferanse']['strekning']['trafikantgruppe']
+                        trafikantgruppe.append( trgruppe )
+
                         stedfesting.append( stedfeststring )
 
             else: 
@@ -439,7 +483,18 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
                     vrefliste.append( 'MANGLER vegsystemreferanse')
 
                 # Føyer til stedfesting 
-                stedfesting.append( 'Kun for vegsegmenter')
+                allested = ','.join( [ v['kortform'] for v in mittobj.lokasjon['stedfestinger' ] if 'kortform' in v ]  )
+                if allested: 
+                    stedfesting.append( allested )
+                else: 
+                    stedfesting.append( 'MANGLER stedfesting???' )
+ 
+                # Føyer til trafikantgruppe: 
+                alleTrafikantgrupper = ','.join( [ v['strekning']['trafikantgruppe'] for v in mittobj.lokasjon['vegsystemreferanser' ] if 'strekning' in v and 'trafikantgruppe' in v['strekning'] ]  )
+                if alleTrafikantgrupper: 
+                    trafikantgruppe.append( alleTrafikantgrupper ) 
+                else: 
+                    trafikantgruppe.append( 'MANGLER trafikantgruppe' )
 
            # Advarsel 
             if len( mygeoms ) == 0:
@@ -456,6 +511,7 @@ def nvdbsok2qgis( sokeobjekt, lagnavn=None,
                     print( "WKT med små bokstaver:",  mywkt) 
 
                 segmentegenskaper = deepcopy( egenskaper ) 
+                segmentegenskaper.append( trafikantgruppe[geomcount] )
                 segmentegenskaper.append(  vrefliste[geomcount] )
                 segmentegenskaper.append( stedfesting[geomcount] )
 

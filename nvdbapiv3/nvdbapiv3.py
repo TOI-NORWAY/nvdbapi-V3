@@ -29,6 +29,7 @@ import re
 from json import JSONDecodeError
 
 from . import apiforbindelse
+import nvdbapiv3
 
 # Uncomment to silent those unverified https-request warnings
 requests.packages.urllib3.disable_warnings() 
@@ -325,7 +326,10 @@ class nvdbVegnett:
     
         # if not self.apiurl in path: 
         if not 'http' in path: 
-            url = ''.join(( self.apiurl, path)) 
+            if path[0] == '/':
+                url = ''.join(( self.forbindelse.apiurl, path))
+            else: 
+                url = '/'.join(( self.forbindelse.apiurl, path))
         else: 
             url = path 
 
@@ -361,10 +365,10 @@ class nvdbVegnett:
                     if not os.path.exists( loggfil): 
                         with open( loggfil, 'w' ) as f2: 
                             f2.write( 'Logger alle anrop mot NVDB api V2 fra nvdbapi.py\n' ) 
-                            f.write( r.url ) 
-                            f.write( '\n' ) 
-                            f.write( json.dumps( data, indent=4, ensure_ascii=False) )
-                            f.write( '\n' )                          
+                            f2.write( r.url ) 
+                            f2.write( '\n' ) 
+                            f2.write( json.dumps( data, indent=4, ensure_ascii=False) )
+                            f2.write( '\n' )                          
                 
                     with open(loggfil, 'a', encoding='utf-8' ) as f: 
                         f.write( '\n==========================\n' ) 
@@ -511,7 +515,7 @@ class nvdbVegnett:
         print( 'Pagineringsinfo: Antall objekt i databuffer=', len( self.data['objekter']))
         print( json.dumps( self.paginering, indent = 4)) 
                 
-    def to_records(self): 
+    def to_records(self, **kwargs): 
         """
         Eksporterer søk for vegnett til liste med NVDB api V3 segmentert vegnett, littegrann forflatet
 
@@ -521,7 +525,12 @@ class nvdbVegnett:
         ARGUMENTS
             None
         KEYWORDS 
-            None 
+            droppRiksvegruter : True (defalt) Tar vekk informasjon om riksvegruter. Sett til False for å 
+                                                få med dictionary med riksvegrute-informasjon
+
+            droppKontrakter : True (default) Tar vekk informasjon om kontraktsområder. Sett til False for å 
+                                                få med dictionary med kontraktsområder-informasjon 
+
         Returns
             Liste med segmentert vegnett fra NVDB api V3, forflatet for enklere bruk 
         """
@@ -530,69 +539,8 @@ class nvdbVegnett:
         v1 = self.nesteForekomst()
         while v1: 
 
-            metadata = v1.pop( 'metadata', { } )
-            v1.update( metadata)
-            vr = 'vegsystemreferanse'
-            vsys = 'vegsystem'
-            strek = 'strekning'
-            kryss = 'kryssystem'
-            sidea = 'sideanlegg'
-
-            struktur = [ 
-                { 'navn' : 'medium',    'verdi' : { 'l1' : 'geometri',    'l2' : 'medium'  }}, 
-                { 'navn' : 'geometri',  'verdi' : { 'l1' : 'geometri',    'l2' : 'wkt'  }}, # NB! Geometri-dictionary byttes nå ut med WKT-tekststreng!
-                                                                                            # Hvis du vil ha mer data ut av geometri-elementet 
-                                                                                            # må du gjøre det FØR denne operasjonen (eller ta vare på data eksplisitt)
-                { 'navn' : 'vref',      'verdi' : { 'l1' : vr,            'l2' : 'kortform'  }}
-            ]
-
-            for mykey in struktur: 
-                try: 
-                     v1[mykey['navn']] = v1[mykey['verdi']['l1']][mykey['verdi']['l2']]
-                except KeyError: 
-                    pass                 
-
-            # Gjør om feltoversikt fra liste-objekt til (kommaseparert) ren tekst 
-            try: 
-                v1['feltoversikt']  = ', '.join( v1['feltoversikt'])
-            except KeyError: 
-                pass 
-
-            # Noen av disse verdiene hentes fra strekning, men overskrives med  data
-            # fra kryssdel eller sidenanlegg dersom de finnes. 
-            # Vi følger python-idomet med å prøve om verdiene er der og ubekymret springe 
-            # videre hvis de ikke finnes. 
-            struktur = [{ 'navn' : 'vegkategori'     , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'vegkategori'        }}, 
-                        { 'navn' : 'fase'            , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'fase'               }},  
-                        { 'navn' : 'nummer'          , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'nummer'             }}, 
-                        { 'navn' : 'strekning'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'strekning'         }}, 
-                        { 'navn' : 'delstrekning'    , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'delstrekning'      }}, 
-                        { 'navn' : 'ankerpunktmeter' , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'meter'             }}, 
-                        { 'navn' : 'kryssdel'        , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'kryssdel'          }}, 
-                        { 'navn' : 'sideanleggsdel'  , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'sideanleggsdel'    }},   
-                        { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'fra_meter'         }}, 
-                        { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'til_meter'         }}, 
-                        { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'trafikantgruppe'   }}, 
-                        { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'fra_meter'         }}, 
-                        { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'til_meter'         }}, 
-                        { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'trafikantgruppe'   }}, 
-                        { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'fra_meter'         }}, 
-                        { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'til_meter'         }}, 
-                        { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'trafikantgruppe'   }}, 
-                        { 'navn' : 'adskilte_lop'    , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'adskilte_løp'      }}
-                        ]
-
-            for mykey in struktur: 
-                try: 
-                    v1[mykey['navn']] = v1[mykey['verdi']['l1']][mykey['verdi']['l2']][mykey['verdi']['l3']]
-                except KeyError: 
-                    pass 
-            
-            v1.pop( 'kontraktsområder', None)
-            v1.pop( 'riksvegruter', None)
-
+            v1 = flatutvegnettsegment( v1, **kwargs )
             data.append( v1 )
-
             v1 = self.nesteForekomst()
 
         return data
@@ -1341,6 +1289,43 @@ def vegrefpunkt( vref, retur='veglenkeposisjon', forb=None ):
 
     return None 
 
+def veglenkepunkt( vpos, retur='wkt', forb=None ): 
+    """
+    Slår opp vegsystemreferanse i NVDBAPILES V3. Returnerer koordinater, vegsystemreferanse eller hele datastrukturen. 
+
+    https://nvdbapiles-v3.atlas.vegvesen.no/dokumentasjon/openapi/#/Vegnett/get_veg
+
+    ARGUMENTS: 
+        vpos - string, veglenkeposisjon på formatet .8225@21802 
+
+    KEYWORDS 
+        retur - string, en av 
+            - 'wkt', string, koordinater formattert som well known text (default)
+            - 'vegsystemreferanse' 
+            - 'komplett' : Dictionary med responsen fra NVDB api 
+
+        forb - En instans av nvdbapiforbindelse. Angis dersom du skal bruke et annet miljø enn PROD
+
+    RETURNS 
+        - string eller dictionary, se 'retur'-nøkkelord. Returnerer None hvis feiler 
+    """
+
+    if not forb: 
+        forb = apiforbindelse.apiforbindelse()
+    params = { 'veglenkesekvens' : vpos }
+    r = forb.les('/veg', params=params)
+    if r.ok: 
+        data = r.json() 
+        if 'ref' in retur.lower()  and 'vegsystemreferanse' in data.keys() and 'kortform' in data['vegsystemreferanse'].keys(): 
+            return data['vegsystemreferanse']['kortform']
+        elif retur.lower() == 'wkt' and 'geometri' in data.keys() and 'wkt' in data['geometri'].keys(): 
+            return data['geometri']['wkt']
+        elif retur.lower() == 'komplett': 
+            return data 
+
+    return None 
+
+
 def vegref2rute( vref1, vref2, forb=None, **kwargs ): 
     """
     Finner rute (liste med veglenke-biter) mellom to punkt angitt som vegsystemreferanse i NVDBAPILES V3. 
@@ -1360,34 +1345,177 @@ def vegref2rute( vref1, vref2, forb=None, **kwargs ):
     RETURNS 
         liste med (biter av) veglenker som til sammen angir ei rute langs NVDB vegnett
     """
+    returdata = []
+
     if not forb: 
         forb = apiforbindelse.apiforbindelse()
-
-    params = {}
-    for (key,val) in kwargs.items(): 
-        params[key] = val
 
     # Finner posisjon på veglenkesekvens for start og slutt
     pos1 = vegrefpunkt( vref1, forb=forb )
     pos2 = vegrefpunkt( vref2, forb=forb )
 
     if pos1 and pos2: 
-        params['start'] = pos1
-        params['slutt'] = pos2
-        
-        r = forb.les( '/beta/vegnett/rute', params=params )
+        returdata = hentrute( pos1, pos2, forb=forb, **kwargs )
+    else: 
+        if not pos1: 
+            print( 'Ugyldig vegreferanse (eller timeout på spørring): ', vref1 )
+        if not pos2: 
+            print( 'Ugyldig vegreferanse (eller timeout på spørring): ', vref2 )
 
-        if r.ok: 
-            data = r.json( )
+    return returdata
 
-            # Ikke funnet rute? Prøver med større bbox 
-            if 'IKKE' in data['metadata']['status_tekst'].upper() and (not 'omkrets' in params.keys() or params['omkrets'] < 10000): 
-                params['omkrets'] = 10000
-                data = vegref2rute( vref1, vref2, forb=forb, **params )
 
-            return data 
+def hentrute( pos1, pos2, forb=None, droppRiksvegruter=True, droppKontrakter=True, **kwargs ): 
+    """
+    Henter vegnett langs rute fra pos1 => pos2 
+
+    Henter vegnett som forbinder to posisjoner (pos1, pos2) på vegnettettet fra 
+    endepunktet NVDB api LES / beta / vegnett / rute 
+
+    ARGUMENTS
+        pos1, pos2 - tekststreng med posisjon på veglenkesekvens, skrevet på formen 0.3744@21765 
+
+    KEYWORDS
+        forb: Instans av objekttype apiforbindelse. Brukes for å teste funksjonalitet i andre miljø enn PROD
+
+        droppRiksvegruter : True (defalt) Tar vekk informasjon om riksvegruter. Sett til False for å 
+                                            få med dictionary med riksvegrute-informasjon
+
+        droppKontrakter : True (default) Tar vekk informasjon om kontraktsområder. Sett til False for å 
+                                            få med dictionary med kontraktsområder-informasjon         
+
+        Alle andre nøkkelord blir tolket som spørreparametre (filter) i spørringen til beta/vegnett/rute, 
+        se dokumentasjon for https://nvdbapiles-v3.atlas.vegvesen.no/dokumentasjon/openapi/#/Vegnett/get_beta_vegnett_rute 
+
+        TODO: Fjern beta-delen av URL når NVDB api oppgraderer vekk beta-stempelet
+
+    RETURNS 
+        liste med dictionaries, formulert på samme måte som det du får
+                fra søkeobjektet nvdbVegnett sin funksjon .to_records() 
+    """
+
+    returdata = []
+
+    if not forb or not 'apiforbindelse' in str( type( forb ) ): 
+        forb = apiforbindelse.apiforbindelse()
+
+    params = {}
+    for (key,val) in kwargs.items(): 
+        params[key] = val
+
+    params['start']  = pos1
+    params['slutt']  = pos2
+
+    r = forb.les( '/beta/vegnett/rute', params=params )
+    if r.ok: 
+        data = r.json()
+
+        # Ikke funnet rute? Prøver med større bbox 
+        if 'IKKE' in data['metadata']['status_tekst'].upper() and (not 'omkrets' in params.keys() or params['omkrets'] < 10000): 
+            params['omkrets'] = 10000
+            returdata = hentrute( pos1, pos2, forb=forb, **params )
+
+        else: 
+            for segment in data['vegnettsrutesegmenter']: 
+                v1 = flatutvegnettsegment( segment, droppRiksvegruter=droppRiksvegruter, droppKontrakter=droppKontrakter )
+                returdata.append( v1 )
+
+        if len( returdata ) == 0: 
+            print( 'beta/vegnett/rute: Tomt resultatsett:', r.url )
+    else: 
+        print( 'beta/vegnett/rute: feilkode: ', r.status_code, r.url )
+
+    return returdata 
+
+def flatutvegnettsegment( vegnettsegment, droppRiksvegruter=True, droppKontrakter=True  ): 
+    """
+    Flater ut et veglenkesegment til en forenklet dictionary-struktur 
+
+    Vi tar et segment fra NVDB api LES /vegnett/segmentert eller /beta/vegnett/rute og pakker 
+    det om til en "flat" dictionary struktur, dvs bytter ut den objektorienterte NVDB-strukturen med 
+    en flat key->value tilnærming. Noen egenskaper sletter vi (kontraktsområde, riksvegrute)
+
+    Denne funksjonen brukes av søkebojektet nvdbVegnett.to_records() og rutesøk-funksjonene 
+
+    ARGUMENTS
+        vegnettsegment - dictionary med data for et vegnettsegment 
+
+    KEYWORDS 
+        droppRiksvegruter : True (defalt) Tar vekk informasjon om riksvegruter. Sett til False for å 
+                                            få med dictionary med riksvegrute-informasjon
+
+        droppKontrakter : True (default) Tar vekk informasjon om kontraktsområder. Sett til False for å 
+                                            få med dictionary med kontraktsområder-informasjon 
+
+    RETURNS 
+        dictionary, input-data med vegnettsinformasjon omarbeidet til flat struktur 
+    """
+
+    v1 = deepcopy( vegnettsegment ) 
+
+    metadata = v1.pop( 'metadata', { } )
+    v1.update( metadata)
+    vr = 'vegsystemreferanse'
+    vsys = 'vegsystem'
+    strek = 'strekning'
+    kryss = 'kryssystem'
+    sidea = 'sideanlegg'
+
+    struktur = [ 
+        { 'navn' : 'medium',    'verdi' : { 'l1' : 'geometri',    'l2' : 'medium'  }}, 
+        { 'navn' : 'geometri',  'verdi' : { 'l1' : 'geometri',    'l2' : 'wkt'  }}, # NB! Geometri-dictionary byttes nå ut med WKT-tekststreng!
+                                                                                    # Hvis du vil ha mer data ut av geometri-elementet 
+                                                                                    # må du gjøre det FØR denne operasjonen (eller ta vare på data eksplisitt)
+        { 'navn' : 'vref',      'verdi' : { 'l1' : vr,            'l2' : 'kortform'  }}
+    ]
+
+    for mykey in struktur: 
+        try: 
+                v1[mykey['navn']] = v1[mykey['verdi']['l1']][mykey['verdi']['l2']]
+        except (KeyError, TypeError): 
+            pass                 
+    # Gjør om feltoversikt fra liste-objekt til (kommaseparert) ren tekst 
+    try: 
+        v1['feltoversikt']  = ','.join( v1['feltoversikt'])
+    except KeyError: 
+        pass 
+
+    # Noen av disse verdiene hentes fra strekning, men overskrives med  data
+    # fra kryssdel eller sidenanlegg dersom de finnes. 
+    # Vi følger python-idomet med å prøve om verdiene er der og ubekymret springe 
+    # videre hvis de ikke finnes. 
+    struktur = [{ 'navn' : 'vegkategori'     , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'vegkategori'        }}, 
+                { 'navn' : 'fase'            , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'fase'               }},  
+                { 'navn' : 'nummer'          , 'verdi' :  { 'l1' : vr, 'l2' : vsys, 'l3' : 'nummer'             }}, 
+                { 'navn' : 'strekning'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'strekning'         }}, 
+                { 'navn' : 'delstrekning'    , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'delstrekning'      }}, 
+                { 'navn' : 'ankerpunktmeter' , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'meter'             }}, 
+                { 'navn' : 'kryssdel'        , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'kryssdel'          }}, 
+                { 'navn' : 'sideanleggsdel'  , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'sideanleggsdel'    }},   
+                { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'fra_meter'         }}, 
+                { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'til_meter'         }}, 
+                { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'trafikantgruppe'   }}, 
+                { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'fra_meter'         }}, 
+                { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'til_meter'         }}, 
+                { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : kryss, 'l3' : 'trafikantgruppe'   }}, 
+                { 'navn' : 'fra_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'fra_meter'         }}, 
+                { 'navn' : 'til_meter'       , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'til_meter'         }}, 
+                { 'navn' : 'trafikantgruppe' , 'verdi' :  { 'l1' : vr, 'l2' : sidea, 'l3' : 'trafikantgruppe'   }}, 
+                { 'navn' : 'adskilte_lop'    , 'verdi' :  { 'l1' : vr, 'l2' : strek, 'l3' : 'adskilte_løp'      }}
+                ]
+
+    for mykey in struktur: 
+        try: 
+            v1[mykey['navn']] = v1[mykey['verdi']['l1']][mykey['verdi']['l2']][mykey['verdi']['l3']]
+        except KeyError: 
+            pass 
     
-    return None 
+    if droppKontrakter: 
+        v1.pop( 'kontraktsområder', None)
+    if droppRiksvegruter: 
+        v1.pop( 'riksvegruter', None)    
+
+    return v1 
 
 def egenskaper2records( egenskaper, relasjoner=False, geometri=False ):
     """
